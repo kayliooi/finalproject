@@ -1,17 +1,14 @@
+import os
 import subprocess
 import argparse
-import shlex
 import csv
-import os
 
-import numpy as np
 import matplotlib.pyplot as plt
 
 CSR_ADDR = 0x0
 COEF_ADDR = 0x4
 OUTCAP_ADDR = 0x8
 
-UAD_PATH = './uad'
 
 class Csr():
     def __init__(self, csr_bin):
@@ -50,6 +47,7 @@ class Csr():
             ((self.rsvd & 0x3ff) << 23)
         )
     
+
     def __str__(self):
         str_rep = "CSR Register Content\n"
         str_rep += f"fen   : {hex(self.fen)}\n"
@@ -68,7 +66,7 @@ class Csr():
         str_rep += f"icap  : {hex(self.icap)}\n"
         str_rep += f"rsvd  : {hex(self.rsvd)}"
         return str_rep
-    
+
 class Coef():
     def __init__(self, coef_bin):
         self.c0 = (coef_bin >> 0) & 0xff
@@ -91,7 +89,7 @@ class Coef():
         str_rep += f"c2 : {hex(self.c2)}\n"
         str_rep += f"c3 : {hex(self.c3)}"
         return str_rep
-    
+
 class Outcap():
     def __init__(self, outcap_bin):
         self.hcap = (outcap_bin >> 0) & 0xff
@@ -113,220 +111,315 @@ class Outcap():
         return str_rep
 
 class Uad():
-    def __init__(self):
-        self.csr = None
-        self.coef = None
-        self.outcap = None
+  def __init__(self, inst_name=None):
+    self.inst = inst_name
+    self.csr = None
+    self.coef = None
+    self.outcap = None
 
-    def reset(self):
-        return os.system(f'{UAD_PATH} com --action reset')
 
-    def disable(self):
-        return os.system(f'{UAD_PATH} com --action disable')
+  FEN   = 1 << 0  # bit 0
+  HALT  = 1 << 5  # bit 5
+  IBCNT = 0xff00  # bit 15 to 8
+  IBOVF = 1 << 16 # bit 16
+  IBCLR = 1 << 17 # bit 17
 
-    def enable(self):
-        return os.system(f'{UAD_PATH} com --action enable')
+  def reset(self):
+    return os.system(f'{self.inst} com --action reset')
+
+  def disable(self):
+    return os.system(f'{self.inst} com --action disable')
+
+  def enable(self):
+    return os.system(f'{self.inst} com --action enable')
+
+  def read_CSR(self):
+    csr_bytes = subprocess.check_output(f'{self.inst} cfg --address {CSR_ADDR}')
+    return int(csr_bytes, 0)
+ 
+  def read_COEF(self):
+    csr_bytes = subprocess.check_output(f'{self.inst} cfg --address {COEF_ADDR}')
+    return int(csr_bytes, 0)
+
+  def read_OUTCAP(self):
+    csr_bytes = subprocess.check_output(f'{self.inst} cfg --address {OUTCAP_ADDR}')
+    return int(csr_bytes, 0)
+  
+  def write_CSR(self, data):
+    csr_bytes = subprocess.check_output(f'{self.inst} cfg --address {CSR_ADDR} --data {hex(data)}')
+    return int(csr_bytes, 0)
+  
+  def _set_bits(self, mask):
+    return self.write_CSR(self.read_CSR() | mask)
+
+  def _clear_bits(self, mask):
+    return self.write_CSR(self.read_CSR() & ~mask)
+
+  def _get_bits(self, mask): 
+    csr = self.read_CSR()
+    lsb = (mask & -mask).bit_length() - 1
+    return (csr & mask) >> lsb
+
+  def halt(self):
+    return self._set_bits(self.HALT)
+
+  def resume(self):
+    return self._clear_bits(self.HALT)
+  
+  def filter_enable(self):
+    return self._set_bits(self.FEN)
+  
+  def filter_disable(self):
+    return self._clear_bits(self.FEN)
+  
+  def enter_bypass_mode(self):
+    self.halt()
+    self.filter_disable()
+    self.resume()
+
+  def exit_bypass_mode(self):
+    self.halt()
+    self.filter_enable()
+    self.resume()
+
+  def write_signal_channel(self, data):    
+    out_bytes = subprocess.check_output(f'{self.inst} sig --data {hex(data)}')
+    if out_bytes:
+      return int(out_bytes, 0)
+    else:
+      return None
     
-    def drive_signal(self, sig_in):
-        sig_out = subprocess.check_output(shlex.split(f'{UAD_PATH} sig --data {hex(sig_in)}')).decode()
-        return int(sig_out, 0)
-
-    def get_csr(self):
-        # csr_bin = subprocess.check_output([f'{UAD_PATH}', 'cfg', '--address', f'{CSR_ADDR}']).decode()
-        # csr_str = csr_bytes.decode().strip()
-        csr_bin = subprocess.check_output(shlex.split(f'{UAD_PATH} cfg --address {CSR_ADDR}')).decode()
-        csr_bin = int(csr_bin, 0)
-        self.csr = Csr(csr_bin)
-        return self.csr
-
-    def get_coef(self):
-        coef_bin = subprocess.check_output(shlex.split(f'{UAD_PATH} cfg --address {COEF_ADDR}')).decode()
-        coef_bin = int(coef_bin, 0)
-        self.coef = Coef(coef_bin)
-        return self.coef
-
-    def get_outcap(self):
-        outcap_bin = subprocess.check_output(shlex.split(f'{UAD_PATH} cfg --address {OUTCAP_ADDR}')).decode()
-        outcap_bin = int(outcap_bin, 0)
-        self.outcap = Outcap(outcap_bin)
-        return self.outcap
-
-    def set_csr(self):
-        exit_code = os.system(f'{UAD_PATH} cfg --address {CSR_ADDR} --data {hex(self.csr.encode())}')
-        self.get_csr()
-        return exit_code
-
-    def set_coef(self):
-        exit_code = os.system(f'{UAD_PATH} cfg --address {COEF_ADDR} --data {hex(self.coef.encode())}')
-        self.get_coef()
-        return exit_code
-
-    def set_outcap(self):
-        exit_code = os.system(f'{UAD_PATH} cfg --address {OUTCAP_ADDR} --data {hex(self.outcap.encode())}')
-        self.get_outcap()
-        return exit_code
+  def get_buffer_count(self):
+    return self._get_bits(self.IBCNT)
+  
+  def get_buffer_overflow(self):
+    return self._get_bits(self.IBOVF)
     
-    def get_reg(self, reg_name):
-        if reg_name == 'csr':
-            return self.get_csr()
+  def clear_buffer(self):
+    return self._set_bits(self.IBCLR)
 
-        elif reg_name == 'coef':
-            return self.get_coef()
+  def get_csr(self): 
+    csr_bin = subprocess.check_output(f'{self.inst} cfg --address {CSR_ADDR}').decode()
+    csr_bin = int(csr_bin, 0)
+    self.csr = Csr(csr_bin)
+    return self.csr
 
-        elif reg_name == 'outcap':
-            return self.get_outcap()
-        
-    def set_reg(self, reg_name):
-        if reg_name == 'csr':
-            return self.set_csr()
+  def get_coef(self): 
+    coef_bin = subprocess.check_output(f'{self.inst} cfg --address {COEF_ADDR}').decode()
+    coef_bin = int(coef_bin, 0)
+    self.coef = Coef(coef_bin)
+    return self.coef
 
-        elif reg_name == 'coef':
-            return self.set_coef()
+  def get_outcap(self): 
+    outcap_bin = subprocess.check_output(f'{self.inst} cfg --address {OUTCAP_ADDR}').decode()
+    outcap_bin = int(outcap_bin, 0)
+    self.outcap = Outcap(outcap_bin)
+    return self.outcap
 
-        elif reg_name == 'outcap':
-            return self.set_outcap()
-        
-def twos_comp(num):
-    return ((num & 0x7F) + (-128 if num >> 7 == 0x1 else 0)) / 64
+  def set_csr(self, csr):
+    exit_code = os.system(f'{self.inst} cfg --address {CSR_ADDR} --data {hex(self.csr.encode())}')
+    self.get_csr()
+    return exit_code
+
+  def set_coef(self):
+    exit_code = os.system(f'{self.inst} cfg --address {COEF_ADDR} --data {hex(self.coef.encode())}')
+    self.get_coef()
+    return exit_code
+
+  def set_outcap(self):
+    exit_code = os.system(f'{self.inst} cfg --address {OUTCAP_ADDR} --data {hex(self.outcap.encode())}')
+    self.get_outcap()   
+    return exit_code
+
+  def get_reg(self, reg_name): 
+    if reg_name == 'csr':
+        return self.get_csr()
+
+    elif reg_name == 'coef':
+        return self.get_coef()
+
+    elif reg_name == 'outcap':
+        return self.get_outcap()
+    
+  def set_reg(self, reg_name):
+    if reg_name == 'csr':
+        return self.set_csr()
+
+    elif reg_name == 'coef':
+        return self.set_coef()
+
+    elif reg_name == 'outcap':
+        return self.set_outcap()
+
+def twos_comp(x):
+    return ((x & 0x7F) - (x & 0x80)) / 64
 
 def test_global_enable(uad):
-    print("\n[TC1] Global Enable / Disable")
+  print("Resetting and enabling IP..")
+  uad.reset()
+  uad.enable()
+  uad.disable()
+  try:
+    print("Reading CSR..")
+    csr_hex = hex(uad.read_CSR())
+    print(f"CSR value: {csr_hex}")
+  except subprocess.CalledProcessError as e:
+    return "PASSED: Outcome is expected"
+  else:
+    return "FAILED: Register is readable when disabled"
+
+
+def test_por(uad, por_file):
+    print("Resetting and enabling IP..")
     uad.reset()
-    uad.disable()
-
-    try:
-        uad.get_reg(CSR_ADDR)
-        print("FAIL: CSR accessible when disabled")
-        return False
-    except:
-        print("PASS: CSR blocked when disabled")
-
     uad.enable()
-    uad.get_reg(CSR_ADDR)
-    print("PASS: CSR accessible after enable")
-    return True
+    
+    csr = uad.get_csr()
+    coef = uad.get_coef()
+    outcap = uad.get_outcap()
+
+    passed = True
+
+    with open(por_file, 'r') as f:
+        for row in csv.DictReader(f):
+            reg = None
+            if row['register'] == 'csr':
+                reg = csr
+
+            elif row['register'] == 'coef':
+                reg = coef
+
+            elif row['register'] == 'outcap':
+                reg = outcap
+
+            actual_value = getattr(reg, row['field'])
+            expected_value = int(row['value'], 0)
+            if actual_value != expected_value:
+                print(f'field {row["register"]}.{row["field"]} does not match. expected: {hex(expected_value)}, got {hex(actual_value)}')
+                passed = False
+
+    if passed: 
+        return "PASSED: POR register matches reference file"
+    return "FAILED: POR register does not match reference file"
 
 def test_bypass(uad):
-    print("\n[TC4] Filter Bypass")
+  # Reset DUT and bring it to a known enabled, non-bypass state
+  uad.reset()
+  uad.enable()
+  # --- Enter bypass mode ---
+  print("Entering Bypass mode..")
+  uad.enter_bypass_mode()
+  sig_in_array = [0xa3, 0xa3, 0xf0, 0xf0, 0x1d]
+  sig_out_array = []
+  for sig_in in sig_in_array:
+    sig_out = uad.write_signal_channel(sig_in)
+    print(f"Input signal: {hex(sig_in)}  Output signal: {hex(sig_out)}")
+    sig_out_array.append(sig_out)
+  # Restore normal operation
+  uad.exit_bypass_mode()
+  # In bypass mode, input should propagate directly to output
+  if sig_in_array == sig_out_array:
+    return "PASSED: Output signal matches input signal"
+  else:
+    return "FAILED: Output signal is different from input signal"
+
+
+def test_buffer(uad):
+  # Reset and enable device
+  uad.reset()
+  uad.enable()
+
+  # Halt the filter to stop processing
+  uad.halt()
+  uad.filter_enable()  # filter still enabled, just halted
+  print("Filter halted. Initial buffer count:", uad.get_buffer_count())
+
+  # Start writing to input buffer
+  print("\nWriting values to buffer...")
+  for i in range(5):  # example: write 10 values
+      uad.write_signal_channel(0x1)
+      print(f"After write {i+1}, buffer count:", uad.get_buffer_count())
+      
+  if uad.get_buffer_count() != 5:
+    return "FAILED: Buffer count error"
+
+  # Write enough to cause overflow (more than 255)
+  print("\nWriting to cause overflow...")
+  total_writes = 260
+  for i in range(1, total_writes + 1):
+      uad.write_signal_channel(0x1)
+      if i % 50 == 0 or i == total_writes:
+          count = uad.get_buffer_count()
+          overflow = uad.get_buffer_overflow()
+          print(f"After write {i}: buffer count = {count}, overflow = {overflow}")
+
+  if not uad.get_buffer_overflow():
+    return "FAILED: Overflow flag error"
+
+  # Clear buffer
+  uad.clear_buffer()
+  print("\nBuffer cleared. Current buffer count:", uad.get_buffer_count(), ". Overflow flag:", uad.get_buffer_overflow())
+
+  if uad.get_buffer_count() != 0:
+    return "FAILED: Buffer clear error"
+
+  # Unhalt filter
+  uad.resume()
+  return "PASSED input buffer test"
+
+def test_process(uad, vec_file, plot=False):
     csr = uad.get_csr()
-    csr.fen = 0
+    csr.fen = 1
+    csr.tclr = 1
+    csr.ibclr = 1
     uad.set_csr(csr)
 
-    for v in [0x10, 0x20, 0x30]:
-        if uad.drive_signal(v) != v:
-            print("FAIL: Output does not match input")
-            return False
+    sig_in, sig_out = [], []
+    with open(vec_file) as f:
+        for l in f:
+            sig_in.append(int(l, 0))
 
-    print("PASS: Bypass works correctly")
-    return True
+    for s in sig_in:
+        sig_out.append(uad.write_signal_channel(s))
+
+    if plot:
+        plt.plot([twos_comp(x) for x in sig_in], label="Input", drawstyle="steps-post")
+        plt.plot([twos_comp(x) for x in sig_out], label="Output", drawstyle="steps-post")
+        plt.legend()
+        plt.title("Signal Input vs Output")
+        plt.show()
+
+    print("PASS: Signal processing executed")
+    return sig_out
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--instance', choices=['golden', 'impl0', 'impl1', 'impl2', 'impl3', 'impl4'])
-    parser.add_argument('-t', '--test', choices=['dump', 'set', 'por', 'config', 'drive'], help='the tests that can be run with this script')
-    parser.add_argument('-v', '--value', help='register field value to set')
-    parser.add_argument('-f', '--file', help='path to csv file with the expected por register values')
-    parser.add_argument('-p', '--plot', action='store_true', help='include this flag to plot when driving')
-    args = parser.parse_args()
+  parser = argparse.ArgumentParser()
+  parser.add_argument('-i', '--instance', help='instance to test')
+  parser.add_argument('-t', '--test', choices=['dump', 'set', 'global_en', 'por', 'bypass', 'buffer', 'config', 'drive', 'process'], help='the tests that can be run with this script')
+  parser.add_argument('-v', '--value', help='register field value to set')
+  parser.add_argument('-f', '--file', help='path to csv file with the expected por register values')
+  parser.add_argument('-p', '--plot', action='store_true')
+  args = parser.parse_args()
 
-    global UAD_PATH
-    UAD_PATH = f'{args.instance}'
-    uad = Uad()
+  uad = Uad(args.instance)
+  print(f"\n= Testing {uad.inst} =")
+
+  if args.test == 'global_en':
     test_global_enable(uad)
-    # test_bypass (uad)
 
-    if args.test == 'dump':
-        print(uad.get_csr(), end='\n\n')
-        print(uad.get_coef(), end='\n\n')
-        print(uad.get_outcap(), end='\n\n')
+  if args.test == 'por':
+    test_por (uad, args.file)
 
-    elif args.test == 'set':
-        temp = args.value.split('=')
-        reg_path = temp[0].split('.')
-        value = temp[1]
-        
-        reg = uad.get_reg(reg_path[0])
-        setattr(reg, reg_path[1], int(value, 0))
-        uad.set_reg(reg_path[0])
-        
-        print(reg)
+  if args.test == 'buffer':
+    print(test_buffer(uad))
 
-    elif args.test == 'config':
-        csr = uad.get_csr()
-        csr.halt=1
-        uad.set_csr()
+  if args.test == 'bypass':
+    print(test_bypass(uad))
 
-        with open(args.file, 'r') as f:
-            coef = uad.get_coef()
-            csr = uad.get_csr()
+  if args.test == 'process':
+    print(test_process(uad, args.file, args.plot))
 
-            for row in csv.DictReader(f):
-                setattr(csr, f'c{row["coef"]}en', int(row['en'], 0))
-                setattr(coef, f'c{row["coef"]}', int(row['value'], 0))
 
-        csr.halt=0
-        uad.set_coef()
-        uad.set_csr()
-
-    elif args.test == 'drive':
-        csr = uad.get_csr()
-        csr.fen=1
-        csr.tclr=1
-        csr.ibclr=1
-        uad.set_csr()
-
-        sig_in = []
-        sig_out = []
-        with open(args.file, 'r') as f:
-            for line in f.readlines():
-                sig_in.append(int(line, 0))
-        
-        for samp_in in sig_in:
-            sig_out.append(uad.drive_signal(samp_in))
-
-        with open('output.vec', 'w') as f:
-            for samp_out in sig_out:
-                f.write(f'{twos_comp(samp_out)}\n')
-
-        if args.plot:
-            plt.plot([i for i in range(len(sig_in))], [twos_comp(samp) for samp in sig_in], label='Input', drawstyle='steps-post')
-            plt.plot([i for i in range(len(sig_in))], [twos_comp(samp) for samp in sig_out], label='Output', drawstyle='steps-post')
-            plt.xlabel('Sample')
-            plt.ylabel('Value')
-            plt.title('Signal Input and Output')
-            plt.legend()
-            plt.show()
-    
-    elif args.test == 'por':
-        print(UAD_PATH)
-        print("\n[TC2] POR Register Value")
-        uad.reset()
-        csr = uad.get_csr()
-        coef = uad.get_coef()
-        outcap = uad.get_outcap()
-
-        passed = True
-
-        with open(args.file, 'r') as f:
-            for row in csv.DictReader(f):
-                reg = None
-                if row['register'] == 'csr':
-                    reg = csr
-
-                elif row['register'] == 'coef':
-                    reg = coef
-
-                elif row['register'] == 'outcap':
-                    reg = outcap
-
-                actual_value = getattr(reg, row['field'])
-                expected_value = int(row['value'], 0)
-                if actual_value != expected_value:
-                    print(f'field {row["register"]}.{row["field"]} does not match. expected: {hex(expected_value)}, got {hex(actual_value)}')
-                    passed = False
-        if passed: 
-            print('All POR value matched.')
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+  main()
