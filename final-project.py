@@ -132,6 +132,8 @@ class Uad():
         return int(sig_out, 0)
 
     def get_csr(self):
+        # csr_bin = subprocess.check_output([f'{UAD_PATH}', 'cfg', '--address', f'{CSR_ADDR}']).decode()
+        # csr_str = csr_bytes.decode().strip()
         csr_bin = subprocess.check_output(shlex.split(f'{UAD_PATH} cfg --address {CSR_ADDR}')).decode()
         csr_bin = int(csr_bin, 0)
         self.csr = Csr(csr_bin)
@@ -186,7 +188,39 @@ class Uad():
         
 def twos_comp(num):
     return ((num & 0x7F) + (-128 if num >> 7 == 0x1 else 0)) / 64
-    
+
+def test_global_enable(uad):
+    print("\n[TC1] Global Enable / Disable")
+    uad.reset()
+    uad.disable()
+
+    try:
+        uad.get_reg(CSR_ADDR)
+        print("FAIL: CSR accessible when disabled")
+        return False
+    except:
+        print("PASS: CSR blocked when disabled")
+
+    uad.enable()
+    uad.get_reg(CSR_ADDR)
+    print("PASS: CSR accessible after enable")
+    return True
+
+def test_bypass(uad):
+    print("\n[TC4] Filter Bypass")
+    csr = uad.get_csr()
+    csr.fen = 0
+    uad.set_csr(csr)
+
+    for v in [0x10, 0x20, 0x30]:
+        if uad.drive_signal(v) != v:
+            print("FAIL: Output does not match input")
+            return False
+
+    print("PASS: Bypass works correctly")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--instance', choices=['golden', 'impl0', 'impl1', 'impl2', 'impl3', 'impl4'])
@@ -196,8 +230,11 @@ def main():
     parser.add_argument('-p', '--plot', action='store_true', help='include this flag to plot when driving')
     args = parser.parse_args()
 
-    UAD_PATH = f'./insts/{args.instance}'
+    global UAD_PATH
+    UAD_PATH = f'{args.instance}'
     uad = Uad()
+    test_global_enable(uad)
+    # test_bypass (uad)
 
     if args.test == 'dump':
         print(uad.get_csr(), end='\n\n')
@@ -262,10 +299,14 @@ def main():
             plt.show()
     
     elif args.test == 'por':
+        print(UAD_PATH)
+        print("\n[TC2] POR Register Value")
         uad.reset()
         csr = uad.get_csr()
         coef = uad.get_coef()
         outcap = uad.get_outcap()
+
+        passed = True
 
         with open(args.file, 'r') as f:
             for row in csv.DictReader(f):
@@ -283,6 +324,9 @@ def main():
                 expected_value = int(row['value'], 0)
                 if actual_value != expected_value:
                     print(f'field {row["register"]}.{row["field"]} does not match. expected: {hex(expected_value)}, got {hex(actual_value)}')
+                    passed = False
+        if passed: 
+            print('All POR value matched.')
 
 if __name__ == '__main__':
     main()
