@@ -221,7 +221,7 @@ class Uad():
     self.get_csr()
     return exit_code
 
-  def set_coef(self):
+  def set_coef(self, coef):
     exit_code = os.system(f'{self.inst} cfg --address {COEF_ADDR} --data {hex(self.coef.encode())}')
     self.get_coef()
     return exit_code
@@ -253,6 +253,37 @@ class Uad():
 
 def twos_comp(x):
     return ((x & 0x7F) - (x & 0x80)) / 64
+
+def test_config(uad, cfg_file):
+  uad.reset()
+  uad.enable()
+  
+  # Set filter config
+  uad.halt()
+  with open(cfg_file, 'r') as f:
+    csr = uad.get_csr()
+    coef = uad.get_coef()
+    for row in csv.DictReader(f):
+        setattr(csr, f'c{row["coef"]}en', int(row['en'], 0))
+        setattr(coef, f'c{row["coef"]}', int(row['value'], 0))
+    uad.set_csr(csr)
+    uad.set_coef(coef)
+  uad.resume()
+
+def run_process(uad, vec_file):
+  uad.enable()
+  uad.resume()
+  uad.exit_bypass_mode()
+  uad.clear_buffer()
+
+  sig_out = []
+  with open(vec_file, 'r') as f:
+    for line in f:
+      samp_in = int(line, 0)
+      samp_out = uad.write_signal_channel(samp_in)
+      sig_out.append(twos_comp(samp_out))
+
+  return sig_out
 
 def test_global_enable(uad):
   print("Resetting and enabling IP..")
@@ -392,11 +423,46 @@ def test_process(uad, vec_file, plot=False):
     print("PASS: Signal processing executed")
     return sig_out
 
+def test_processall(golden_uad, dut_uad, vec_file):
+  cfg_files = ["p0.cfg","p4.cfg","p7.cfg","p9.cfg"]
+
+  if not cfg_files:
+    print("No .cfg files found")
+    return
+
+  print(f"Found {len(cfg_files)} config files\n")
+
+  for cfg in cfg_files:
+    cfg_name = os.path.basename(cfg)
+    print(f"=== Testing {cfg_name} ===")
+
+    # --- Program golden ---
+    test_config(golden_uad, cfg)
+    golden_out = run_process(golden_uad, vec_file)
+
+    # --- Program DUT ---
+    test_config(dut_uad, cfg)
+    dut_out = run_process(dut_uad, vec_file)
+
+    # --- Compare ---
+    mismatches = []
+    for i, (g, d) in enumerate(zip(golden_out, dut_out)):
+      if g != d:
+        mismatches.append((i, g, d))
+
+    if not mismatches:
+        print("PASSED")
+    else:
+      print(f"FAILED: ({len(mismatches)} mismatches)")
+      for i, g, d in mismatches[:5]:  # limit spam
+        print(f"  sample {i}: golden={g}, dut={d}")
+      if len(mismatches) > 5:
+        print("  ...")
 
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument('-i', '--instance', help='instance to test')
-  parser.add_argument('-t', '--test', choices=['dump', 'set', 'global_en', 'por', 'bypass', 'buffer', 'config', 'drive', 'process'], help='the tests that can be run with this script')
+  parser.add_argument('-t', '--test', choices=['dump', 'set', 'global_en', 'por', 'bypass', 'buffer', 'config', 'drive', 'process', 'processall'], help='the tests that can be run with this script')
   parser.add_argument('-v', '--value', help='register field value to set')
   parser.add_argument('-f', '--file', help='path to csv file with the expected por register values')
   parser.add_argument('-p', '--plot', action='store_true')
@@ -419,6 +485,13 @@ def main():
 
   if args.test == 'process':
     print(test_process(uad, args.file, args.plot))
+
+  if args.test == 'processall':
+    if args.file is None:
+        print("Expected vector file, argument -f")
+    else:
+        golden = Uad("golden")
+        test_processall(golden, uad, args.file)
 
 
 if __name__ == "__main__":
